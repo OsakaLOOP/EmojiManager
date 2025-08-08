@@ -11,8 +11,8 @@
     <RootNamespace>EmojiManager</RootNamespace>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <TargetPlatformIdentifier>Windows</TargetPlatformIdentifier>
-    <AssemblyVersion>1.1.6</AssemblyVersion>
-    <FileVersion>1.1.6</FileVersion>
+    <AssemblyVersion>1.1.7</AssemblyVersion>
+    <FileVersion>1.1.7</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>

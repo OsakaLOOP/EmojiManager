@@ -910,14 +910,24 @@ namespace EmojiManager
                 dataObject.SetFileDropList(fileList);
 
                 // 设置图像数据以确保QQ能正确处理
-                using var stream = new FileStream(imagePath, FileMode.Open, FileAccess.Read);
-                var bitmapImage = new System.Windows.Media.Imaging.BitmapImage();
-                bitmapImage.BeginInit();
-                bitmapImage.StreamSource = stream;
-                bitmapImage.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
-                bitmapImage.EndInit();
-                bitmapImage.Freeze();
-                dataObject.SetImage(bitmapImage);
+                try
+                {
+                    await using var stream = new FileStream(imagePath, FileMode.Open, FileAccess.Read);
+                    var bitmapImage = new System.Windows.Media.Imaging.BitmapImage();
+                    bitmapImage.BeginInit();
+                    bitmapImage.StreamSource = stream;
+                    bitmapImage.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+                    // 添加 IgnoreColorProfile 选项来忽略 ICC profile
+                    bitmapImage.CreateOptions = System.Windows.Media.Imaging.BitmapCreateOptions.IgnoreColorProfile;
+                    bitmapImage.EndInit();
+                    bitmapImage.Freeze();
+                    dataObject.SetImage(bitmapImage);
+                }
+                catch
+                {
+                    // 如果加载图像失败，仍然可以使用文件列表方式
+                    // 大多数程序都支持从文件列表粘贴
+                }
 
                 // 设置剪贴板（copy=false）
                 Clipboard.SetDataObject(dataObject, false);
