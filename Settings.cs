@@ -88,6 +88,21 @@ namespace EmojiManager
         public bool EnableFilenameSearch { get; set; }
 
         /// <summary>
+        /// 基础缩略图尺寸（像素）
+        /// </summary>
+        public int BaseThumbnailSize { get; set; } = 80;
+
+        /// <summary>
+        /// 是否启用Ctrl+滚轮调整缩略图大小
+        /// </summary>
+        public bool EnableCtrlScrollResize { get; set; } = true;
+
+        /// <summary>
+        /// 最近使用表情分组的缩放比例
+        /// </summary>
+        public double RecentEmojiScale { get; set; } = 1.0;
+
+        /// <summary>
         /// 加载设置
         /// </summary>
         public static Settings Load()

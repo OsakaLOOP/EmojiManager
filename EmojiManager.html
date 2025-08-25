@@ -191,10 +191,11 @@
 
         .image-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(60px, 1fr));
-            gap: 8px;
+            grid-template-columns: repeat(auto-fill, var(--thumbnail-size, 60px));
+            gap: calc(var(--thumbnail-size, 60px) * 0.15);
             padding: 10px 0;
             position: relative;
+            justify-content: start;
         }
 
             .image-grid.drag-over {
@@ -205,8 +206,8 @@
 
         .image-item {
             position: relative;
-            width: 60px;
-            height: 60px;
+            width: var(--thumbnail-size, 60px);
+            height: var(--thumbnail-size, 60px);
             background: #3c3c3c;
             border-radius: 4px;
             overflow: hidden;
@@ -403,6 +404,10 @@
             <span class="context-menu-icon">📁</span>
             <span>打开目录</span>
         </div>
+        <div class="context-menu-item" id="menu-reset-scale" style="display: none;">
+            <span class="context-menu-icon">🔄</span>
+            <span>重置缩放倍率</span>
+        </div>
         <div class="context-menu-item danger" id="menu-delete">
             <span class="context-menu-icon">🗑️</span>
             <span>删除</span>
@@ -419,6 +424,9 @@
         let isPinned = false;
         let contextMenuTarget = null;
         let enableFilenameSearch = false;
+        let baseThumbnailSize = 80;
+        let enableCtrlScrollResize = true;
+        let folderScales = {}; // 保存每个文件夹的缩放比例
 
         // 状态保存
         let expandedFolders = new Set();
@@ -508,6 +516,12 @@
             emojiData = data.folders;
             basePath = data.basePath;
             enableFilenameSearch = data.enableFilenameSearch || false;
+            baseThumbnailSize = data.baseThumbnailSize || 80;
+            enableCtrlScrollResize = data.enableCtrlScrollResize !== false;
+            folderScales = data.folderScales || {};
+
+            // 设置默认缩略图尺寸
+            document.documentElement.style.setProperty('--thumbnail-size', baseThumbnailSize + 'px');
 
             // 更新搜索框占位符文本
             const searchInput = document.getElementById('search-input');
@@ -638,6 +652,16 @@
                 grid.className = 'image-grid';
                 grid.dataset.folderPath = folder.Path;
 
+                // 应用文件夹特定的缩放比例
+                if (folderScales[folder.Path]) {
+                    const scale = folderScales[folder.Path];
+                    const scaledSize = Math.round(baseThumbnailSize * scale);
+                    grid.style.setProperty('--thumbnail-size', scaledSize + 'px');
+                } else {
+                    // 确保默认尺寸被正确设置
+                    grid.style.setProperty('--thumbnail-size', baseThumbnailSize + 'px');
+                }
+
                 folder.Images.forEach(imagePath => {
                     const item = createImageItem(imagePath);
                     grid.appendChild(item);
@@ -653,6 +677,40 @@
                     renderFolder(child, content, fullPath + '/');
                 });
             }
+
+            // 添加右键菜单支持
+            header.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                
+                contextMenuTarget = {
+                    type: 'folder-header',
+                    folderPath: folder.Path,
+                    element: header
+                };
+                
+                // 显示/隐藏重置缩放选项
+                const resetScaleItem = document.getElementById('menu-reset-scale');
+                const openLocationItem = document.getElementById('menu-open-location');
+                const deleteItem = document.getElementById('menu-delete');
+                
+                // 检查是否有自定义缩放（包括最近使用表情）
+                const hasCustomScale = (folder.Path === '' || folder.Path === null) ? 
+                    folderScales[''] !== undefined : 
+                    folderScales[folder.Path] !== undefined;
+                    
+                if (hasCustomScale) {
+                    resetScaleItem.style.display = 'block';
+                } else {
+                    resetScaleItem.style.display = 'none';
+                }
+                
+                // 文件夹标题右键菜单，隐藏删除选项
+                openLocationItem.style.display = 'block';
+                deleteItem.style.display = 'none';
+                
+                showContextMenu(e.clientX, e.clientY);
+            });
 
             header.onclick = () => {
                 const arrow = header.querySelector('.folder-arrow');
@@ -1086,6 +1144,103 @@
 
         document.addEventListener('drop', (e) => {
             e.preventDefault();
+        });
+
+        // Ctrl+滚轮缩放处理
+        document.addEventListener('wheel', (e) => {
+            if (!enableCtrlScrollResize || !e.ctrlKey) return;
+            
+            e.preventDefault();
+            
+            // 找到鼠标所在的图片网格
+            const grid = e.target.closest('.image-grid');
+            if (!grid) return;
+            
+            const folderPath = grid.dataset.folderPath;
+            // 检查是否为未定义的路径
+            if (folderPath === 'undefined' || folderPath === undefined) return;
+            
+            // 获取当前缩放比例
+            let currentScale = folderScales[folderPath] || 1.0;
+            
+            // 根据滚轮方向调整缩放
+            const delta = e.deltaY > 0 ? -0.1 : 0.1;
+            currentScale = Math.max(0.2, Math.min(5.0, currentScale + delta));
+            
+            // 更新缩放比例
+            folderScales[folderPath] = currentScale;
+            const scaledSize = Math.round(baseThumbnailSize * currentScale);
+            grid.style.setProperty('--thumbnail-size', scaledSize + 'px');
+            
+            // 通知C#保存缩放配置
+            try {
+                if (folderPath === '' || folderPath === null) {
+                    // 最近使用表情的缩放保存到配置文件
+                    window.chrome.webview.postMessage(JSON.stringify({
+                        type: 'saveRecentEmojiScale',
+                        scale: currentScale
+                    }));
+                } else {
+                    // 普通文件夹的缩放保存到文件夹内
+                    window.chrome.webview.postMessage(JSON.stringify({
+                        type: 'saveFolderScale',
+                        folderPath: folderPath,
+                        scale: currentScale
+                    }));
+                }
+            } catch (error) {
+                console.error('Failed to save folder scale:', error);
+            }
+            
+            // 显示提示
+            showToast(`缩放: ${Math.round(currentScale * 100)}%`, 'info');
+        }, { passive: false });
+
+        // 重置缩放倍率
+        document.getElementById('menu-reset-scale').addEventListener('click', () => {
+            if (!contextMenuTarget || contextMenuTarget.type !== 'folder-header') return;
+            
+            const folderPath = contextMenuTarget.folderPath;
+            
+            // 检查是否为最近使用表情
+            if (folderPath === '' || folderPath === null) {
+                // 重置最近使用表情的缩放
+                delete folderScales[''];
+                const grid = document.querySelector(`.image-grid[data-folder-path=""]`);
+                if (grid) {
+                    grid.style.setProperty('--thumbnail-size', baseThumbnailSize + 'px');
+                }
+                
+                // 通知C#重置最近使用表情的缩放
+                try {
+                    window.chrome.webview.postMessage(JSON.stringify({
+                        type: 'resetRecentEmojiScale'
+                    }));
+                } catch (error) {
+                    console.error('Failed to reset recent emoji scale:', error);
+                }
+            } else if (folderScales[folderPath]) {
+                // 重置普通文件夹的缩放
+                delete folderScales[folderPath];
+                
+                const grid = document.querySelector(`.image-grid[data-folder-path="${CSS.escape(folderPath)}"]`);
+                if (grid) {
+                    grid.style.setProperty('--thumbnail-size', baseThumbnailSize + 'px');
+                }
+                
+                // 通知C#删除缩放配置
+                try {
+                    window.chrome.webview.postMessage(JSON.stringify({
+                        type: 'deleteFolderScale',
+                        folderPath: folderPath
+                    }));
+                } catch (error) {
+                    console.error('Failed to delete folder scale:', error);
+                }
+            }
+            
+            showToast('已重置缩放倍率', 'success');
+            hideContextMenu();
         });
 
         // 接收来自C#的消息

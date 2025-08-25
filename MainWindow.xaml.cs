@@ -27,6 +27,13 @@ namespace EmojiManager
         private DateTime _lastReloadTime = DateTime.MinValue;
         private TaskbarIcon? _taskbarIcon;
         private System.Windows.Threading.DispatcherTimer? _foregroundWindowTracker;
+        
+        // 缓存 JsonSerializerOptions 实例
+        private static readonly JsonSerializerOptions JsonOptions = new()
+        {
+            PropertyNameCaseInsensitive = true,
+            WriteIndented = true
+        };
 
         [LibraryImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
@@ -369,6 +376,7 @@ namespace EmojiManager
             WebView.CoreWebView2.Settings.IsStatusBarEnabled = false;
             WebView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
             WebView.CoreWebView2.Settings.IsZoomControlEnabled = false;
+
             WebView.CoreWebView2.Settings.AreDefaultScriptDialogsEnabled = true;
             WebView.CoreWebView2.Settings.IsScriptEnabled = true;
 
@@ -495,14 +503,26 @@ namespace EmojiManager
             }
             allFolders.AddRange(emojiData);
 
+            // 加载所有文件夹的缩放配置
+            var folderScales = LoadAllFolderScales(_settings.EmojiBasePath);
+            
+            // 添加最近使用表情的缩放配置
+            if (_settings.RecentEmojiScale != 1.0)
+            {
+                folderScales[""] = _settings.RecentEmojiScale;
+            }
+
             var dataObject = new
             {
                 folders = allFolders,
                 basePath = _settings.EmojiBasePath,
                 recentLimit = _settings.RecentEmojisLimit,
-                enableFilenameSearch = _settings.EnableFilenameSearch
+                enableFilenameSearch = _settings.EnableFilenameSearch,
+                baseThumbnailSize = _settings.BaseThumbnailSize,
+                enableCtrlScrollResize = _settings.EnableCtrlScrollResize,
+                folderScales
             };
-            var json = JsonSerializer.Serialize(dataObject);
+            var json = JsonSerializer.Serialize(dataObject, JsonOptions);
             await WebView.CoreWebView2.ExecuteScriptAsync($"loadEmojiData({json})");
         }
 
@@ -711,13 +731,84 @@ namespace EmojiManager
             }
         }
 
-        private readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true };
         private async void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
         {
+            var message = e.TryGetWebMessageAsString();
+            if (string.IsNullOrEmpty(message)) return;
+
             try
             {
-                var message = e.TryGetWebMessageAsString();
-                var data = JsonSerializer.Deserialize<WebMessage>(message, _jsonOptions);
+                // 先尝试解析为缩放相关消息
+                using var doc = JsonDocument.Parse(message);
+                var root = doc.RootElement;
+                
+                if (root.TryGetProperty("type", out var typeElement))
+                {
+                    var type = typeElement.GetString();
+                    
+                    // 处理缩放相关消息
+                    switch (type)
+                    {
+                        case "saveFolderScale":
+                            if (root.TryGetProperty("folderPath", out var folderPathElement) &&
+                                root.TryGetProperty("scale", out var scaleElement))
+                            {
+                                var folderPath = folderPathElement.GetString();
+                                var scale = scaleElement.GetDouble();
+                                if (!string.IsNullOrEmpty(folderPath))
+                                {
+                                    // 如果不是绝对路径，将其转换为绝对路径
+                                    var fullPath = Path.IsPathRooted(folderPath) ? 
+                                        folderPath : 
+                                        Path.Combine(_settings.EmojiBasePath, folderPath);
+                                    SaveFolderScale(fullPath, scale);
+                                }
+                            }
+                            return;
+                            
+                        case "deleteFolderScale":
+                            if (root.TryGetProperty("folderPath", out var delFolderPathElement))
+                            {
+                                var folderPath = delFolderPathElement.GetString();
+                                if (!string.IsNullOrEmpty(folderPath))
+                                {
+                                    // 如果不是绝对路径，将其转换为绝对路径
+                                    var fullPath = Path.IsPathRooted(folderPath) ? 
+                                        folderPath : 
+                                        Path.Combine(_settings.EmojiBasePath, folderPath);
+                                    DeleteFolderScale(fullPath);
+                                }
+                            }
+                            return;
+                            
+                        case "saveRecentEmojiScale":
+                            if (root.TryGetProperty("scale", out var recentScaleElement))
+                            {
+                                var scale = recentScaleElement.GetDouble();
+                                _settings.RecentEmojiScale = scale;
+                                _settings.Save();
+                            }
+                            return;
+                            
+                        case "resetRecentEmojiScale":
+                            _settings.RecentEmojiScale = 1.0;
+                            _settings.Save();
+                            return;
+                    }
+                }
+
+                // 如果不是缩放消息，尝试作为 WebMessage 处理
+                WebMessage? data = null;
+                try
+                {
+                    data = JsonSerializer.Deserialize<WebMessage>(message, JsonOptions);
+                }
+                catch (JsonException)
+                {
+                    // 如果无法解析为 WebMessage，说明是未知消息格式，直接返回
+                    Console.WriteLine($"Unknown message format: {message?[..Math.Min(100, message?.Length ?? 0)]}");
+                    return;
+                }
 
                 switch (data?.Type)
                 {
@@ -770,6 +861,7 @@ namespace EmojiManager
             }
             catch (Exception ex)
             {
+                // 只有非预期的错误才显示给用户
                 await ShowToast($"错误: {ex.Message}", ToastType.Error);
             }
         }
@@ -1364,6 +1456,106 @@ namespace EmojiManager
                    </body>
                    </html>
                    """;
+        }
+
+        /// <summary>
+        /// 加载所有文件夹的缩放配置
+        /// </summary>
+        private static Dictionary<string, double> LoadAllFolderScales(string basePath)
+        {
+            var scales = new Dictionary<string, double>();
+            
+            if (!Directory.Exists(basePath))
+                return scales;
+            
+            try
+            {
+                // 递归加载所有文件夹的缩放配置
+                LoadFolderScalesRecursive(basePath, scales);
+            }
+            catch { }
+            
+            return scales;
+        }
+
+        private static void LoadFolderScalesRecursive(string path, Dictionary<string, double> scales)
+        {
+            try
+            {
+                // 检查当前文件夹的缩放配置
+                var scaleFile = Path.Combine(path, "emoji_scale.json");
+                if (File.Exists(scaleFile))
+                {
+                    try
+                    {
+                        var json = File.ReadAllText(scaleFile);
+                        using var doc = JsonDocument.Parse(json);
+                        if (doc.RootElement.TryGetProperty("scale", out var scaleElement))
+                        {
+                            scales[path] = scaleElement.GetDouble();
+                        }
+                    }
+                    catch { }
+                }
+                
+                // 递归处理子文件夹
+                foreach (var dir in Directory.GetDirectories(path))
+                {
+                    LoadFolderScalesRecursive(dir, scales);
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// 保存文件夹的缩放配置
+        /// </summary>
+        private static void SaveFolderScale(string folderPath, double scale)
+        {
+            try
+            {
+                // 验证路径是否存在
+                if (!Directory.Exists(folderPath))
+                {
+                    Console.WriteLine($"Folder not found: {folderPath}");
+                    return;
+                }
+                
+                var scaleFile = Path.Combine(folderPath, "emoji_scale.json");
+                var data = new { scale };
+                var json = JsonSerializer.Serialize(data, JsonOptions);
+                File.WriteAllText(scaleFile, json);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to save folder scale: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 删除文件夹的缩放配置
+        /// </summary>
+        private static void DeleteFolderScale(string folderPath)
+        {
+            try
+            {
+                // 验证路径是否存在
+                if (!Directory.Exists(folderPath))
+                {
+                    Console.WriteLine($"Folder not found: {folderPath}");
+                    return;
+                }
+                
+                var scaleFile = Path.Combine(folderPath, "emoji_scale.json");
+                if (File.Exists(scaleFile))
+                {
+                    File.Delete(scaleFile);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to delete folder scale: {ex.Message}");
+            }
         }
     }
 

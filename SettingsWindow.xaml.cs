@@ -56,6 +56,8 @@ namespace EmojiManager
             txtRecentLimit.Text = _settings.RecentEmojisLimit.ToString();
             chkSortByTime.IsChecked = _settings.SortImagesByTime;
             chkEnableFilenameSearch.IsChecked = _settings.EnableFilenameSearch;
+            txtBaseThumbnailSize.Text = _settings.BaseThumbnailSize.ToString();
+            chkEnableCtrlScrollResize.IsChecked = _settings.EnableCtrlScrollResize;
             
             UpdateHotkeyStatus("当前快捷键: " + _settings.HotkeyDisplayName, false);
         }
@@ -342,11 +344,21 @@ namespace EmojiManager
                 return;
             }
 
+            // 验证基础缩略图尺寸
+            if (!int.TryParse(txtBaseThumbnailSize.Text, out int thumbnailSize) || thumbnailSize < 40 || thumbnailSize > 200)
+            {
+                MessageBox.Show("缩略图尺寸必须是40-200之间的整数", "错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+                txtBaseThumbnailSize.Focus();
+                return;
+            }
+
             // 保存设置
             _settings.EmojiBasePath = txtEmojiPath.Text;
             _settings.RecentEmojisLimit = recentLimit;
             _settings.SortImagesByTime = chkSortByTime.IsChecked == true;
             _settings.EnableFilenameSearch = chkEnableFilenameSearch.IsChecked == true;
+            _settings.BaseThumbnailSize = thumbnailSize;
+            _settings.EnableCtrlScrollResize = chkEnableCtrlScrollResize.IsChecked == true;
 
             // 如果限制数量减少了，需要裁剪现有的最近表情列表
             while (_settings.RecentEmojis.Count > _settings.RecentEmojisLimit)
@@ -466,6 +478,80 @@ namespace EmojiManager
                 // 恢复按钮状态
                 btnCorrectExtensions.IsEnabled = true;
                 btnCorrectExtensions.Content = "开始修正文件扩展名";
+            }
+        }
+
+        private async void ResetAllThumbnailSizes_Click(object sender, RoutedEventArgs e)
+        {
+            var result = MessageBox.Show(
+                "此操作将删除所有表情包文件夹中的缩放配置文件，恢复为默认尺寸。\n\n确定要继续吗？",
+                "确认重置",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+
+            if (result != MessageBoxResult.Yes)
+                return;
+
+            try
+            {
+                // 验证路径
+                if (string.IsNullOrWhiteSpace(txtEmojiPath.Text) || !Directory.Exists(txtEmojiPath.Text))
+                {
+                    MessageBox.Show("请先选择有效的表情包路径", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                int deletedCount = 0;
+                var searchPattern = "emoji_scale.json";
+
+                // 递归删除所有表情包文件夹中的缩放配置文件
+                foreach (var dir in Directory.GetDirectories(txtEmojiPath.Text, "*", SearchOption.AllDirectories))
+                {
+                    var scaleFile = Path.Combine(dir, searchPattern);
+                    if (File.Exists(scaleFile))
+                    {
+                        try
+                        {
+                            File.Delete(scaleFile);
+                            deletedCount++;
+                        }
+                        catch { }
+                    }
+                }
+
+                // 删除根目录的配置文件
+                var rootScaleFile = Path.Combine(txtEmojiPath.Text, searchPattern);
+                if (File.Exists(rootScaleFile))
+                {
+                    try
+                    {
+                        File.Delete(rootScaleFile);
+                        deletedCount++;
+                    }
+                    catch { }
+                }
+
+                // 同时重置最近使用表情的缩放设置
+                if (_settings.RecentEmojiScale != 1.0)
+                {
+                    _settings.RecentEmojiScale = 1.0;
+                    _settings.Save();
+                    deletedCount++; // 算作一个重置项
+                }
+
+                MessageBox.Show($"已重置 {deletedCount} 个表情包的缩放设置", "重置完成", 
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+
+                // 通知主窗口刷新表情数据
+                if (Owner is MainWindow mainWindow)
+                {
+                    await mainWindow.RefreshEmojiData();
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"重置过程中发生错误：{ex.Message}", "错误", 
+                    MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
