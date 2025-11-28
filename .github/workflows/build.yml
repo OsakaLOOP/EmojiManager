@@ -1,0 +1,52 @@
+name: Build WPF App
+
+# 触发条件：
+# 1. 当你 push 代码到 main 分支时
+# 2. 允许你在 GitHub 网页端手动点击 "Run workflow" 按钮 (workflow_dispatch)
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Windows Exe
+    runs-on: windows-latest  # WPF 必须在 Windows 环境构建
+
+    steps:
+    # 1. 拉取代码
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    # 2. 配置 .NET 环境 (根据你的项目推测是 .NET 7 或 8，这里用 8 兼容性较好)
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 8.0.x
+
+    # 3. 执行发布命令
+    # -c Release: 发布版
+    # -r win-x64: 64位 Windows
+    # --self-contained true: 内置 .NET 运行时 (别人没装 .NET 也能跑)
+    # -p:PublishSingleFile=true: 合并成一个 exe
+    # -o ./publish: 输出到 publish 文件夹
+    - name: Publish EXE
+      run: dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ./publish
+
+    # 4. (关键) 确保 EmojiManager.html 也在输出目录中
+    # 如果你的 .csproj 没有设置自动复制 html，这一步会强制把它复制过去
+    - name: Copy HTML Resource
+      run: |
+        if (Test-Path "EmojiManager.html") {
+            Copy-Item "EmojiManager.html" -Destination "./publish/"
+            Write-Host "HTML file copied successfully."
+        } else {
+            Write-Host "Warning: EmojiManager.html not found in root!"
+        }
+
+    # 5. 上传构建产物供你下载
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: EmojiManager-Build  # 下载压缩包的名字
+        path: ./publish/* # 打包 publish 文件夹下的所有内容
